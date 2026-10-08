@@ -250,7 +250,7 @@ function postCheck(candidates) {
     timer = setTimeout(function () {
       cleanup();
       reject(new Error('タイムアウトしました。電波状況を確認してください'));
-    }, 15000);
+    }, 45000);
 
     window[cb] = function (data) {
       cleanup();
