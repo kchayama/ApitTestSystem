@@ -110,7 +110,7 @@
 <body>
 
 <header>
-  <h1>出欠打刻</h1>
+  <h1>出欠確認</h1>
   <span id="clock"></span>
 </header>
 
@@ -144,14 +144,14 @@
 /* ===== 設定 ===== */
 const CONFIG = {
   // Apps Script を「ウェブアプリ」として公開したURL（末尾が /exec）
-  API_URL: 'https://script.google.com/macros/s/ここにデプロイIDを入れる/exec',
+  API_URL: 'https://script.google.com/macros/s/AKfycbylwH_tfYQdxeFEVcRxwRh7TfbgTYCpZyi_D3mx60lJEmg7nrdwEDl8Vn6FdIk2EAuw/exec',
   // Code.gs の CONFIG.API_TOKEN と同じ値
-  API_TOKEN: 'ここをCode.gsと同じ値にする',
-  ID_MIN_DIGITS: 4,      // 社員番号の最小桁数（候補の絞り込み用）
-  ID_MAX_DIGITS: 8,      // 社員番号の最大桁数
+  API_TOKEN: 'AKfycbylwH_tfYQdxeFEVcRxwRh7TfbgTYCpZyi_D3mx60lJEmg7nrdwEDl8Vn6FdIk2EAuw',
+  ID_MIN_DIGITS: 6,      // 社員番号の最小桁数（候補の絞り込み用）
+  ID_MAX_DIGITS: 6,      // 社員番号の最大桁数
   MAX_CANDIDATES: 10,    // サーバーへ送る候補の上限
-  RETRY_WAIT_MS: 2000,   // 不一致・失敗後、再読み取りまでの待ち時間
-  SUCCESS_HOLD_MS: 3000, // 打刻成功後、次の読み取りまでの待ち時間
+  RETRY_WAIT_MS: 1000,   // 不一致・失敗後、再読み取りまでの待ち時間
+  SUCCESS_HOLD_MS: 1000, // 打刻成功後、次の読み取りまでの待ち時間
 };
 
 /* ===== 共通 ===== */
