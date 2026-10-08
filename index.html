@@ -144,11 +144,11 @@
 /* ===== 設定 ===== */
 const CONFIG = {
   // Apps Script を「ウェブアプリ」として公開したURL（末尾が /exec）
-  API_URL: 'https://script.google.com/macros/s/AKfycbylwH_tfYQdxeFEVcRxwRh7TfbgTYCpZyi_D3mx60lJEmg7nrdwEDl8Vn6FdIk2EAuw/exec',
+  API_URL: 'https://script.google.com/macros/s/AKfycbxAQNPCZUpwAjaULHziAO2KfyO7F12tIo39MgMjgrLU8ZFQv8am04HjXoV_hf48ylqh/exec',
   // Code.gs の CONFIG.API_TOKEN と同じ値
-  API_TOKEN: 'AKfycbylwH_tfYQdxeFEVcRxwRh7TfbgTYCpZyi_D3mx60lJEmg7nrdwEDl8Vn6FdIk2EAuw',
-  ID_MIN_DIGITS: 6,      // 社員番号の最小桁数（候補の絞り込み用）
-  ID_MAX_DIGITS: 6,      // 社員番号の最大桁数
+  API_TOKEN: 'AKfycbxAQNPCZUpwAjaULHziAO2KfyO7F12tIo39MgMjgrLU8ZFQv8am04HjXoV_hf48ylqh',
+  ID_MIN_DIGITS: 6,
+  ID_MAX_DIGITS: 6,
   MAX_CANDIDATES: 10,    // サーバーへ送る候補の上限
   RETRY_WAIT_MS: 1000,   // 不一致・失敗後、再読み取りまでの待ち時間
   SUCCESS_HOLD_MS: 1000, // 打刻成功後、次の読み取りまでの待ち時間
@@ -238,14 +238,39 @@ function extractCandidates(text) {
 
 /* ===== サーバー照合・打刻 ===== */
 async function postCheck(candidates) {
-  const res = await fetch(CONFIG.API_URL, {
-    method: 'POST',
-    // text/plain にするとCORSの事前確認が不要になり、Apps Scriptで扱いやすい
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ token: CONFIG.API_TOKEN, candidates }),
+  return new Promise((resolve, reject) => {
+    const cb = 'attendanceCb_' + Date.now() + '_' + Math.floor(Math.random() * 1e6);
+    const script = document.createElement('script');
+    let timer = null;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      delete window[cb];
+      script.remove();
+    };
+
+    timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('タイムアウトしました。電波状況を確認してください'));
+    }, 15000);
+
+    window[cb] = (data) => {
+      cleanup();
+      resolve(data);
+    };
+    script.onerror = () => {
+      cleanup();
+      reject(new Error('サーバーに接続できませんでした'));
+    };
+
+    const params = new URLSearchParams({
+      token: CONFIG.API_TOKEN,
+      candidates: JSON.stringify(candidates),
+      callback: cb,
+    });
+    script.src = ${CONFIG.API_URL}?${params.toString()};
+    document.head.appendChild(script);
   });
-  if (!res.ok) throw new Error(`通信エラー（HTTP ${res.status}）`);
-  return res.json();
 }
 
 function errorMessage(code) {
