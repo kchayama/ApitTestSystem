@@ -39,7 +39,7 @@
 
   .camera {
     position: relative;
-    aspect-ratio: 4 / 3;
+    aspect-ratio: 8 / 3;
     background: #0d1117;
     overflow: hidden;
     border-radius: 6px;
@@ -47,7 +47,7 @@
   video { width: 100%; height: 100%; object-fit: cover; display: block; }
   .guide {
     position: absolute;
-    left: 10%; right: 10%; top: 25%; bottom: 25%;
+    left: 20%; right: 20%; top: 15%; bottom: 35%;
     border: 2px solid var(--guide);
     border-radius: 4px;
     box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.4);
@@ -104,6 +104,33 @@
     min-width: 0;
   }
   .manual button { padding: 12px 18px; }
+
+  /* 本人確認モーダル */
+  .modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    z-index: 10;
+  }
+  .modal[hidden] { display: none; }
+  .sheet {
+    background: #fff;
+    border-radius: 10px;
+    padding: 20px;
+    width: 100%;
+    max-width: 420px;
+  }
+  .modal-label { margin: 0; font-size: 14px; color: var(--muted); }
+  .modal-name { margin: 6px 0 2px; font-size: 28px; font-weight: 700; }
+  .modal-sub { margin: 0; font-size: 15px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .modal-q { margin: 18px 0 14px; font-size: 17px; font-weight: 700; }
+  .modal-actions { display: flex; gap: 10px; }
+  .modal-actions button { flex: 1; }
+  .secondary { background: #fff; color: var(--ink); border: 1px solid var(--line); }
 </style>
 </head>
 <body>
@@ -137,19 +164,33 @@
   </details>
 </main>
 
+<!-- 本人確認モーダル -->
+<div id="modal" class="modal" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="modal-name">
+    <p class="modal-label">社員確認</p>
+    <p id="modal-name" class="modal-name"></p>
+    <p id="modal-id" class="modal-sub"></p>
+    <p class="modal-q">社員証の氏名と一致しますか？</p>
+    <div class="modal-actions">
+      <button id="modal-no" type="button" class="secondary">いいえ（キャンセル）</button>
+      <button id="modal-yes" type="button">はい（記録する）</button>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
-/* ===== 設定（この2か所だけ書き換えてください） ===== */
+/* ===== 設定（この1か所だけ書き換えてください） ===== */
 const CONFIG = {
   // Apps Script のURL（末尾が /exec）
-  API_URL: 'https://script.google.com/a/macros/bs-ja.co.jp/s/AKfycbwv_Lf-kjEhmi7lTCj-I6ETQ0tQeifj69pTrO_fKnXXn9BhL0GOWxpQ7oMwvmJ9Pipd/exec',
+  API_URL: 'ここにApps ScriptのURL（/exec で終わる）を入れる',
   // Code.gs の API_TOKEN と同じ値
   API_TOKEN: 'attend2026x',
-  ID_MIN_DIGITS: 4,
-  ID_MAX_DIGITS: 8,
+  ID_DIGITS: 6,          // 社員番号は6桁
   MAX_CANDIDATES: 10,
   RETRY_WAIT_MS: 2000,
   SUCCESS_HOLD_MS: 3000,
+  REQUEST_TIMEOUT_MS: 50000,
 };
 
 /* ===== 共通 ===== */
@@ -200,8 +241,8 @@ function prepareFrame() {
   const vh = video.videoHeight;
   if (!vw || !vh) throw new Error('カメラの準備ができていません');
 
-  const sx = vw * 0.1, sy = vh * 0.25, sw = vw * 0.8, sh = vh * 0.5;
-  const W = 1200;
+  const sx = vw * 0.2, sy = vh * 0.15, sw = vw * 0.6, sh = vh * 0.5;
+  const W = 900;
   const H = Math.round((W * sh) / sw);
   canvas.width = W;
   canvas.height = H;
@@ -221,22 +262,28 @@ function prepareFrame() {
   ctx.putImageData(img, 0, 0);
 }
 
+// 直近に読み取った数字の並び（メッセージ表示用）
+let lastReadRuns = [];
+
 function extractCandidates(text) {
   const norm = text.replace(/[OoQD]/g, '0').replace(/[IilL|]/g, '1');
   const runs = norm.match(/\d+(?:[\s-]+\d+)*/g) || [];
+  lastReadRuns = runs.map((r) => r.replace(/\D/g, '')).filter(Boolean);
   const set = new Set();
-  for (const r of runs) {
-    const digits = r.replace(/\D/g, '');
-    if (digits.length >= CONFIG.ID_MIN_DIGITS && digits.length <= CONFIG.ID_MAX_DIGITS) {
+  for (const digits of lastReadRuns) {
+    if (digits.length === CONFIG.ID_DIGITS) {
       set.add(digits);
     }
   }
   return Array.from(set).slice(0, CONFIG.MAX_CANDIDATES);
 }
 
-/* ===== サーバー照合（<script>方式。Safariで確実に動く） ===== */
-function postCheck(candidates) {
-  return new Promise((resolve, reject) => {
+/* ===== サーバー通信（<script>方式） ===== */
+// 検索中だけ中断できるようにするための関数（検索中のみ値が入る）
+let searchCancel = null;
+
+function callApi(params, abortable) {
+  return new Promise(function (resolve, reject) {
     const cb = 'attendanceCb_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);
     const script = document.createElement('script');
     let timer = null;
@@ -245,12 +292,13 @@ function postCheck(candidates) {
       clearTimeout(timer);
       delete window[cb];
       script.remove();
+      if (abortable) searchCancel = null;
     }
 
     timer = setTimeout(function () {
       cleanup();
       reject(new Error('タイムアウトしました。電波状況を確認してください'));
-    }, 45000);
+    }, CONFIG.REQUEST_TIMEOUT_MS);
 
     window[cb] = function (data) {
       cleanup();
@@ -261,12 +309,18 @@ function postCheck(candidates) {
       reject(new Error('サーバーに接続できませんでした'));
     };
 
-    const params = new URLSearchParams({
-      token: CONFIG.API_TOKEN,
-      candidates: JSON.stringify(candidates),
-      callback: cb,
-    });
-    script.src = CONFIG.API_URL + '?' + params.toString();
+    if (abortable) {
+      searchCancel = function () {
+        clearTimeout(timer);
+        script.remove();
+        window[cb] = function () {}; // 中断後に届いた応答は無視する
+        searchCancel = null;
+        reject(new Error('ABORTED'));
+      };
+    }
+
+    const query = new URLSearchParams(Object.assign({ token: CONFIG.API_TOKEN, callback: cb }, params));
+    script.src = CONFIG.API_URL + '?' + query.toString();
     document.head.appendChild(script);
   });
 }
@@ -274,23 +328,73 @@ function postCheck(candidates) {
 function errorMessage(code) {
   if (code === 'unauthorized') return 'トークンが一致しません。設定を確認してください';
   if (code === 'busy') return 'サーバーが混み合っています。しばらくしてから再度お試しください';
+  if (code === 'not_found') return '社員マスタに該当する社員番号がありません';
   return '処理に失敗しました（' + (code || '不明') + '）';
 }
 
+/* ===== 本人確認モーダル ===== */
+// 「はい」なら true、「いいえ」なら false を返す
+function askConfirm(emp) {
+  return new Promise(function (resolve) {
+    $('modal-name').textContent = emp.name;
+    $('modal-id').textContent = '社員番号 ' + emp.id;
+    $('modal').hidden = false;
+    $('modal-yes').onclick = function () {
+      $('modal').hidden = true;
+      resolve(true);
+    };
+    $('modal-no').onclick = function () {
+      $('modal').hidden = true;
+      resolve(false);
+    };
+  });
+}
+
+/* ===== 画像読み取りと手入力の共通入口 ===== */
+// 処理中に別の読み取り・手入力が来ても二重に動かさない
+let busy = false;
+
 async function verifyAndRecord(candidates) {
+  if (busy) {
+    return CONFIG.RETRY_WAIT_MS;
+  }
+  busy = true;
+  try {
+    return await runVerification(candidates);
+  } finally {
+    busy = false;
+  }
+}
+
+/* ===== 照合 → 本人確認 → 記録 / キャンセル ===== */
+async function runVerification(candidates) {
   if (candidates.length === 0) {
-    setResult('ng', '数字を読み取れませんでした', '社員証を枠に合わせて、もう一度かざしてください');
+    const read = lastReadRuns.length ? lastReadRuns.join(' / ') : '（数字なし）';
+    setResult(
+      'ng',
+      '社員番号は' + CONFIG.ID_DIGITS + '桁です',
+      '読み取り値: ' + read + '\n6桁の社員番号を枠に合わせて、もう一度かざしてください'
+    );
     return CONFIG.RETRY_WAIT_MS;
   }
 
+  // 1. 社員マスタを検索（記録はしない）
   setStatus('社員番号を照合しています…');
-  const res = await postCheck(candidates);
-
-  if (!res.ok) {
-    setResult('err', '打刻できませんでした', errorMessage(res.error));
+  let found;
+  try {
+    found = await callApi({ action: 'lookup', candidates: JSON.stringify(candidates) }, true);
+  } catch (err) {
+    if (err.message === 'ABORTED') {
+      setResult('ng', '検索を中断しました', '入力内容が変わったため、照合を取りやめました。打刻ボタンで再度検索してください');
+      return CONFIG.RETRY_WAIT_MS;
+    }
+    throw err;
+  }
+  if (!found.ok) {
+    setResult('err', '照合できませんでした', errorMessage(found.error));
     return CONFIG.RETRY_WAIT_MS;
   }
-  if (!res.found) {
+  if (!found.found) {
     setResult(
       'ng',
       '一致する社員番号がありません',
@@ -299,8 +403,25 @@ async function verifyAndRecord(candidates) {
     return CONFIG.RETRY_WAIT_MS;
   }
 
-  setResult('ok', res.type + 'を記録しました', res.name + '\n社員番号 ' + res.id + '\n' + res.time);
-  return CONFIG.SUCCESS_HOLD_MS;
+  // 2. 本人確認（はい／いいえ）
+  setStatus('本人確認をお願いします');
+  const same = await askConfirm({ id: found.id, name: found.name });
+
+  // 3-a. はい → 出勤 / 退勤を記録
+  if (same) {
+    setStatus('記録しています…');
+    const rec = await callApi({ action: 'confirm', id: found.id });
+    if (!rec.ok) {
+      setResult('err', '打刻できませんでした', errorMessage(rec.error));
+      return CONFIG.RETRY_WAIT_MS;
+    }
+    setResult('ok', rec.type + 'を記録しました', rec.name + '\n社員番号 ' + rec.id + '\n' + rec.time);
+    return CONFIG.SUCCESS_HOLD_MS;
+  }
+
+  // 3-b. いいえ → 何も記録せず、キャンセルとして表示
+  setResult('ng', 'キャンセルしました', found.name + '\n出勤・退勤は記録していません');
+  return CONFIG.RETRY_WAIT_MS;
 }
 
 /* ===== カメラと読み取りループ ===== */
@@ -370,16 +491,36 @@ $('toggle').addEventListener('click', function () {
 
 /* ===== 手入力 ===== */
 $('manual-btn').addEventListener('click', async function () {
-  const digits = $('manual').value.replace(/\D/g, '');
-  if (!digits) {
-    setResult('ng', '社員番号を入力してください', '');
+  const raw = $('manual').value.trim();
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length !== CONFIG.ID_DIGITS) {
+    setResult(
+      'ng',
+      '社員番号は' + CONFIG.ID_DIGITS + '桁です',
+      '入力値: ' + (raw || '（空欄）') + '\n6桁の社員番号を入力してください'
+    );
     return;
   }
-  setStatus('手入力の社員番号を照合しています…');
+  if (busy) {
+    setStatus('前の処理が終わるまでお待ちください');
+    return;
+  }
   try {
     await verifyAndRecord([digits]);
+    // 検索中に入力が変わった場合は、新しい入力を残す
+    if ($('manual').value.trim() === raw) {
+      $('manual').value = '';
+    }
   } catch (err) {
     setResult('err', '打刻できませんでした', err.message);
+  }
+});
+
+// 検索中に手入力の内容が変わったら、検索を中断する
+$('manual').addEventListener('input', function () {
+  if (searchCancel) {
+    searchCancel();
+    setStatus('中断されました');
   }
 });
 </script>
