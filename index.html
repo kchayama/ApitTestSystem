@@ -73,6 +73,8 @@
   .actions { display: flex; gap: 6px; }
   .actions button { flex: 1; }
   #ocr { width: 100%; }
+  .opt { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 14px; color: var(--muted); }
+  .opt select { font: inherit; font-size: 15px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); }
   button:focus-visible, input:focus-visible, summary:focus-visible {
     outline: 3px solid var(--guide);
     outline-offset: 2px;
@@ -154,6 +156,19 @@
   <canvas id="canvas" hidden></canvas>
 
   <p id="status" class="status">「カメラを起動」を押してください</p>
+  <div class="opt">
+    <label for="res">読み取り画素数</label>
+    <select id="res">
+      <option value="320">横320px（最も速い）</option>
+      <option value="400">横400px</option>
+      <option value="480">横480px</option>
+      <option value="560">横560px</option>
+      <option value="640" selected>横640px（標準）</option>
+      <option value="800">横800px</option>
+      <option value="960">横960px</option>
+      <option value="1200">横1200px</option>
+    </select>
+  </div>
   <button id="ocr" type="button" disabled>OCR取得</button>
   <div class="actions">
     <button id="shoot" type="button">カメラを起動</button>
@@ -270,7 +285,7 @@ function prepareFrame() {
   const sh = Math.min(vh - sy, gh / s);
 
   // 縦横比を保って、横640pxに合わせる
-  const W = 640;
+  const W = Number($('res').value);
   const H = Math.round((W * sh) / sw);
   canvas.width = W;
   canvas.height = H;
@@ -319,6 +334,42 @@ function binarize(d) {
     d[i] = v;
     d[i + 1] = v;
     d[i + 2] = v;
+  }
+}
+
+// 枠の内側の読み取り範囲を、映像の座標（ピクセル）で返す
+function getReadRect() {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  const box = video.getBoundingClientRect();
+  const cw = box.width;
+  const ch = box.height;
+  const s = Math.max(cw / vw, ch / vh);
+  const ox = (cw - vw * s) / 2;
+  const oy = (ch - vh * s) / 2;
+  const gx = cw * 0.01, gy = ch * 0.01, gw = cw * 0.98, gh = ch * 0.98;
+  const sx = Math.max(0, (gx - ox) / s);
+  const sy = Math.max(0, (gy - oy) / s);
+  const sw = Math.min(vw - sx, gw / s);
+  const sh = Math.min(vh - sy, gh / s);
+  return { sx, sy, sw, sh };
+}
+
+// この機種のカメラで実際に取れる横幅を超える画素数は選べないようにする
+function updateResOptions() {
+  if (!video.videoWidth || !video.getBoundingClientRect().width) return;
+  const maxW = Math.floor(getReadRect().sw);
+  const select = $('res');
+  let largestAllowed = null;
+  for (const opt of select.options) {
+    const ok = Number(opt.value) <= maxW;
+    opt.disabled = !ok;
+    opt.hidden = !ok;
+    if (ok) largestAllowed = opt;
+  }
+  const current = select.selectedOptions[0];
+  if (current && current.disabled && largestAllowed) {
+    largestAllowed.selected = true;
   }
 }
 
@@ -526,6 +577,7 @@ async function onShoot() {
     try {
       setStatus('カメラを起動しています…');
       await startCamera();
+      updateResOptions();
       $('shoot').textContent = '撮影する';
       $('ocr').disabled = false;
       setStatus('社員証を枠に合わせて「撮影する」を押してください');
@@ -634,6 +686,7 @@ async function onOcr() {
   setStatus('停止しました。撮影する場合は「撮影する」を押してください');
 }
 
+video.addEventListener('loadedmetadata', updateResOptions);
 $('ocr').addEventListener('click', onOcr);
 $('shoot').addEventListener('click', onShoot);
 $('read').addEventListener('click', onRead);
