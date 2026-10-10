@@ -582,29 +582,56 @@ async function onRead() {
   setStatus('撮り直す場合は「撮り直す」を押してください');
 }
 
-/* ===== OCR取得ボタン（撮影と読み取りを1回の操作で行う） ===== */
+/* ===== OCR取得ボタン（もう一度押されるまで読み取りを続ける） ===== */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let ocrRunning = false;
+
 async function onOcr() {
-  if (!stream || captured) return;
-  if (busy) {
-    setStatus('前の処理が終わるまでお待ちください');
+  // 実行中にもう一度押したら停止する
+  if (ocrRunning) {
+    ocrRunning = false;
+    $('ocr').disabled = true;
+    $('ocr').textContent = '停止中…';
+    setStatus('停止しています…');
     return;
   }
-  try {
-    prepareFrame();
-    showPreview(snapshotFrame());
-    captured = true;
-    $('shoot').textContent = '撮り直す';
-    $('read').disabled = true;
-    $('ocr').disabled = true;
+  if (!stream || captured) return;
 
-    const ocr = await getWorker();
-    setStatus('文字を読み取っています…');
-    const result = await ocr.recognize(canvas);
-    await verifyAndRecord(extractCandidates(result.data.text));
-  } catch (err) {
-    setResult('err', '読み取りに失敗しました', err.message || String(err));
+  ocrRunning = true;
+  $('ocr').textContent = 'OCR停止';
+  $('shoot').disabled = true;
+  $('read').disabled = true;
+  showLive();
+
+  while (ocrRunning) {
+    let wait = CONFIG.RETRY_WAIT_MS;
+    try {
+      if (busy) {
+        // 手入力などの処理が終わるまで待つ
+        await sleep(CONFIG.RETRY_WAIT_MS);
+        continue;
+      }
+      prepareFrame();
+      const ocr = await getWorker();
+      setStatus('文字を読み取っています…');
+      const result = await ocr.recognize(canvas);
+      await verifyAndRecord(extractCandidates(result.data.text));
+      if ($('result').dataset.kind === 'ok') {
+        wait = CONFIG.SUCCESS_HOLD_MS;
+      }
+    } catch (err) {
+      setResult('err', '読み取りに失敗しました', err.message || String(err));
+    }
+    if (!ocrRunning) break;
+    setStatus('OCRを続けています（停止するには「OCR停止」を押してください）');
+    await sleep(wait);
   }
-  setStatus('撮り直す場合は「撮り直す」を押してください');
+
+  // 停止したら、元の操作ボタンの状態に戻す
+  $('ocr').textContent = 'OCR取得';
+  $('ocr').disabled = false;
+  $('shoot').disabled = false;
+  setStatus('停止しました。撮影する場合は「撮影する」を押してください');
 }
 
 $('ocr').addEventListener('click', onOcr);
