@@ -72,6 +72,7 @@
   button:disabled { opacity: 0.5; }
   .actions { display: flex; gap: 6px; }
   .actions button { flex: 1; }
+  #ocr { width: 100%; }
   button:focus-visible, input:focus-visible, summary:focus-visible {
     outline: 3px solid var(--guide);
     outline-offset: 2px;
@@ -153,6 +154,7 @@
   <canvas id="canvas" hidden></canvas>
 
   <p id="status" class="status">「カメラを起動」を押してください</p>
+  <button id="ocr" type="button" disabled>OCR取得</button>
   <div class="actions">
     <button id="shoot" type="button">カメラを起動</button>
     <button id="read" type="button" disabled>番号取得</button>
@@ -525,6 +527,7 @@ async function onShoot() {
       setStatus('カメラを起動しています…');
       await startCamera();
       $('shoot').textContent = '撮影する';
+      $('ocr').disabled = false;
       setStatus('社員証を枠に合わせて「撮影する」を押してください');
     } catch (err) {
       setStatus(cameraError(err), 'err');
@@ -537,6 +540,7 @@ async function onShoot() {
     showLive();
     $('shoot').textContent = '撮影する';
     $('read').disabled = true;
+    $('ocr').disabled = false;
     setStatus('社員証を枠に合わせて「撮影する」を押してください');
     return;
   }
@@ -552,6 +556,7 @@ async function onShoot() {
     captured = true;
     $('shoot').textContent = '撮り直す';
     $('read').disabled = false;
+    $('ocr').disabled = true;
     setStatus('「番号取得」を押すと、この画像から社員番号を読み取ります');
   } catch (err) {
     setResult('err', '撮影できませんでした', err.message || String(err));
@@ -577,6 +582,32 @@ async function onRead() {
   setStatus('撮り直す場合は「撮り直す」を押してください');
 }
 
+/* ===== OCR取得ボタン（撮影と読み取りを1回の操作で行う） ===== */
+async function onOcr() {
+  if (!stream || captured) return;
+  if (busy) {
+    setStatus('前の処理が終わるまでお待ちください');
+    return;
+  }
+  try {
+    prepareFrame();
+    showPreview(snapshotFrame());
+    captured = true;
+    $('shoot').textContent = '撮り直す';
+    $('read').disabled = true;
+    $('ocr').disabled = true;
+
+    const ocr = await getWorker();
+    setStatus('文字を読み取っています…');
+    const result = await ocr.recognize(canvas);
+    await verifyAndRecord(extractCandidates(result.data.text));
+  } catch (err) {
+    setResult('err', '読み取りに失敗しました', err.message || String(err));
+  }
+  setStatus('撮り直す場合は「撮り直す」を押してください');
+}
+
+$('ocr').addEventListener('click', onOcr);
 $('shoot').addEventListener('click', onShoot);
 $('read').addEventListener('click', onRead);
 
