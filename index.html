@@ -5,7 +5,542 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>出欠打刻</title>
 <style>
+  :root {<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>出欠打刻</title>
+<style>
   :root {
+    --paper: #f4f2ec;
+    --ink: #1c2530;
+    --muted: #6b7480;
+    --line: #d9d5ca;
+    --ok: #1d7a57;
+    --ng: #b5432c;
+    --guide: #e8a33a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--paper); color: var(--ink); }
+  body {
+    font-family: "Hiragino Sans", "Yu Gothic UI", "Noto Sans JP", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100dvh;
+    max-width: 560px;
+    margin: 0 auto;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 2px 6px 4px;
+    border-bottom: 1px solid var(--line);
+  }
+  h1 { font-size: 16px; margin: 0; font-weight: 700; }
+  #clock { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+
+  .camera {
+    position: relative;
+    aspect-ratio: 8 / 3;
+    background: #0d1117;
+    overflow: hidden;
+    border-radius: 6px;
+  }
+  video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .guide {
+    position: absolute;
+    left: 5%; right: 5%; top: 10%; bottom: 10%;
+    border: 2px solid var(--guide);
+    border-radius: 4px;
+    box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.4);
+    pointer-events: none;
+  }
+
+  .status { margin: 0; font-size: 15px; color: var(--muted); min-height: 1.5em; }
+  .status[data-kind="err"] { color: var(--ng); }
+
+  button {
+    font: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    padding: 9px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--ink);
+    color: #fff;
+    cursor: pointer;
+  }
+  button:focus-visible, input:focus-visible, summary:focus-visible {
+    outline: 3px solid var(--guide);
+    outline-offset: 2px;
+  }
+
+  #result {
+    border-left: 4px solid var(--line);
+    padding: 2px 0 2px 10px;
+    min-height: 60px;
+  }
+  #result[data-kind="ok"] { border-color: var(--ok); }
+  #result[data-kind="ng"], #result[data-kind="err"] { border-color: var(--ng); }
+  #result h2 { font-size: 20px; margin: 0; font-weight: 700; }
+  #result-detail {
+    white-space: pre-line;
+    color: var(--muted);
+    margin: 6px 0 0;
+    font-size: 15px;
+    line-height: 1.7;
+    font-variant-numeric: tabular-nums;
+  }
+
+  details { border-top: 1px solid var(--line); padding: 6px 6px 0; }
+  summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+  .manual { display: flex; gap: 6px; margin-top: 6px; }
+  input {
+    font: inherit;
+    font-size: 18px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+    flex: 1;
+    min-width: 0;
+  }
+  .manual button { padding: 12px 18px; }
+
+  /* 本人確認モーダル */
+  .modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    z-index: 10;
+  }
+  .modal[hidden] { display: none; }
+  .sheet {
+    background: #fff;
+    border-radius: 10px;
+    padding: 20px;
+    width: 100%;
+    max-width: 420px;
+  }
+  .modal-label { margin: 0; font-size: 14px; color: var(--muted); }
+  .modal-name { margin: 6px 0 2px; font-size: 28px; font-weight: 700; }
+  .modal-sub { margin: 0; font-size: 15px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .modal-q { margin: 18px 0 14px; font-size: 17px; font-weight: 700; }
+  .modal-actions { display: flex; gap: 10px; }
+  .modal-actions button { flex: 1; }
+  .secondary { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>出欠打刻</h1>
+  <span id="clock"></span>
+</header>
+
+<main style="display:flex;flex-direction:column;gap:6px;">
+  <div class="camera">
+    <video id="video" autoplay muted playsinline></video>
+    <div class="guide"></div>
+  </div>
+  <canvas id="canvas" hidden></canvas>
+
+  <p id="status" class="status">「読み取りを開始」を押すとカメラが起動します</p>
+  <button id="toggle" type="button">読み取りを開始</button>
+
+  <section id="result" data-kind="idle">
+    <h2 id="result-title">結果はここに表示されます</h2>
+    <p id="result-detail"></p>
+  </section>
+
+  <details>
+    <summary>手入力で打刻する</summary>
+    <div class="manual">
+      <input id="manual" inputmode="numeric" autocomplete="off" placeholder="社員番号">
+      <button id="manual-btn" type="button">打刻</button>
+    </div>
+  </details>
+</main>
+
+<!-- 本人確認モーダル -->
+<div id="modal" class="modal" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="modal-name">
+    <p class="modal-label">社員確認</p>
+    <p id="modal-name" class="modal-name"></p>
+    <p id="modal-id" class="modal-sub"></p>
+    <p class="modal-q">社員証の氏名と一致しますか？</p>
+    <div class="modal-actions">
+      <button id="modal-no" type="button" class="secondary">いいえ（キャンセル）</button>
+      <button id="modal-yes" type="button">はい（記録する）</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+/* ===== 設定（この1か所だけ書き換えてください） ===== */
+const CONFIG = {
+  // Apps Script のURL（末尾が /exec）
+  API_URL: 'https://script.google.com/a/macros/bs-ja.co.jp/s/AKfycbwv_Lf-kjEhmi7lTCj-I6ETQ0tQeifj69pTrO_fKnXXn9BhL0GOWxpQ7oMwvmJ9Pipd/exec',
+  // Code.gs の API_TOKEN と同じ値
+  API_TOKEN: 'attend2026x',
+  ID_DIGITS: 6,          // 社員番号は6桁
+  MAX_CANDIDATES: 10,
+  RETRY_WAIT_MS: 1000,
+  SUCCESS_HOLD_MS: 1500,
+  REQUEST_TIMEOUT_MS: 50000,
+};
+
+/* ===== 共通 ===== */
+const $ = (id) => document.getElementById(id);
+const video = $('video');
+const canvas = $('canvas');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let stream = null;
+let scanning = false;
+let runId = 0;
+let workerPromise = null;
+
+function tick() {
+  $('clock').textContent = new Date().toLocaleTimeString('ja-JP', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+}
+tick();
+setInterval(tick, 1000);
+
+function setStatus(msg, kind) {
+  const el = $('status');
+  el.textContent = msg;
+  el.dataset.kind = kind || '';
+}
+
+function setResult(kind, title, detail) {
+  $('result').dataset.kind = kind;
+  $('result-title').textContent = title;
+  $('result-detail').textContent = detail || '';
+}
+
+/* ===== OCR ===== */
+function getWorker() {
+  if (!workerPromise) {
+    workerPromise = (async () => {
+      setStatus('OCRエンジンを準備しています（初回のみ時間がかかります）');
+      const w = await Tesseract.createWorker('eng');
+      await w.setParameters({
+        tessedit_pageseg_mode: '6',              // 1つのまとまりとして読む
+        tessedit_char_whitelist: '0123456789',   // 数字だけを認識する
+      });
+      return w;
+    })();
+  }
+  return workerPromise;
+}
+
+function prepareFrame() {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (!vw || !vh) throw new Error('カメラの準備ができていません');
+
+  const sx = vw * 0.25, sy = vh * 0.2, sw = vw * 0.5, sh = vh * 0.4;
+  const W = 640;
+  const H = 300;
+  canvas.width = W;
+  canvas.height = H;
+
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, W, H);
+
+  const img = ctx.getImageData(0, 0, W, H);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    const v = Math.min(255, Math.max(0, (g - 128) * 1.6 + 128));
+    d[i] = v;
+    d[i + 1] = v;
+    d[i + 2] = v;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+// 直近に読み取った数字の並び（メッセージ表示用）
+let lastReadRuns = [];
+
+function extractCandidates(text) {
+  const norm = text.replace(/[OoQD]/g, '0').replace(/[IilL|]/g, '1');
+  const runs = norm.match(/\d+(?:[\s-]+\d+)*/g) || [];
+  lastReadRuns = runs.map((r) => r.replace(/\D/g, '')).filter(Boolean);
+  const set = new Set();
+  for (const digits of lastReadRuns) {
+    if (digits.length === CONFIG.ID_DIGITS) {
+      set.add(digits);
+    }
+  }
+  return Array.from(set).slice(0, CONFIG.MAX_CANDIDATES);
+}
+
+/* ===== サーバー通信（<script>方式） ===== */
+// 検索中だけ中断できるようにするための関数（検索中のみ値が入る）
+let searchCancel = null;
+
+function callApi(params, abortable) {
+  return new Promise(function (resolve, reject) {
+    if (CONFIG.API_URL.indexOf('ここに') !== -1) {
+      reject(new Error('API_URLが未設定です。index.htmlのCONFIGを確認してください'));
+      return;
+    }
+    const cb = 'attendanceCb_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);
+    const script = document.createElement('script');
+    let timer = null;
+
+    function cleanup() {
+      clearTimeout(timer);
+      delete window[cb];
+      script.remove();
+      if (abortable) searchCancel = null;
+    }
+
+    timer = setTimeout(function () {
+      cleanup();
+      reject(new Error('タイムアウトしました。電波状況を確認してください'));
+    }, CONFIG.REQUEST_TIMEOUT_MS);
+
+    window[cb] = function (data) {
+      cleanup();
+      resolve(data);
+    };
+    script.onerror = function () {
+      cleanup();
+      reject(new Error('サーバーに接続できませんでした（接続先: ' + CONFIG.API_URL.trim().slice(0, 45) + '…）'));
+    };
+
+    if (abortable) {
+      searchCancel = function () {
+        clearTimeout(timer);
+        script.remove();
+        window[cb] = function () {}; // 中断後に届いた応答は無視する
+        searchCancel = null;
+        reject(new Error('ABORTED'));
+      };
+    }
+
+    const query = new URLSearchParams(Object.assign({ token: CONFIG.API_TOKEN, callback: cb }, params));
+    const base = CONFIG.API_URL.trim();
+    script.src = base + '?' + query.toString();
+    document.head.appendChild(script);
+  });
+}
+
+function errorMessage(code) {
+  if (code === 'unauthorized') return 'トークンが一致しません。設定を確認してください';
+  if (code === 'busy') return 'サーバーが混み合っています。しばらくしてから再度お試しください';
+  if (code === 'not_found') return '社員マスタに該当する社員番号がありません';
+  return '処理に失敗しました（' + (code || '不明') + '）';
+}
+
+/* ===== 本人確認モーダル ===== */
+// 「はい」なら true、「いいえ」なら false を返す
+function askConfirm(emp) {
+  return new Promise(function (resolve) {
+    $('modal-name').textContent = emp.name;
+    $('modal-id').textContent = '社員番号 ' + emp.id;
+    $('modal').hidden = false;
+    $('modal-yes').onclick = function () {
+      $('modal').hidden = true;
+      resolve(true);
+    };
+    $('modal-no').onclick = function () {
+      $('modal').hidden = true;
+      resolve(false);
+    };
+  });
+}
+
+/* ===== 画像読み取りと手入力の共通入口 ===== */
+// 処理中に別の読み取り・手入力が来ても二重に動かさない
+let busy = false;
+
+async function verifyAndRecord(candidates) {
+  if (busy) {
+    return CONFIG.RETRY_WAIT_MS;
+  }
+  busy = true;
+  try {
+    return await runVerification(candidates);
+  } finally {
+    busy = false;
+  }
+}
+
+/* ===== 照合 → 本人確認 → 記録 / キャンセル ===== */
+async function runVerification(candidates) {
+  if (candidates.length === 0) {
+    const read = lastReadRuns.length ? lastReadRuns.join(' / ') : '（数字なし）';
+    setResult(
+      'ng',
+      '社員番号は' + CONFIG.ID_DIGITS + '桁です',
+      '読み取り値: ' + read + '\n6桁の社員番号を枠に合わせて、もう一度かざしてください'
+    );
+    return CONFIG.RETRY_WAIT_MS;
+  }
+
+  // 1. 社員マスタを検索（記録はしない）
+  setStatus('社員番号を照合しています…');
+  let found;
+  try {
+    found = await callApi({ action: 'lookup', candidates: JSON.stringify(candidates) }, true);
+  } catch (err) {
+    if (err.message === 'ABORTED') {
+      setResult('ng', '検索を中断しました', '入力内容が変わったため、照合を取りやめました。打刻ボタンで再度検索してください');
+      return CONFIG.RETRY_WAIT_MS;
+    }
+    throw err;
+  }
+  if (!found.ok) {
+    setResult('err', '照合できませんでした', errorMessage(found.error));
+    return CONFIG.RETRY_WAIT_MS;
+  }
+  if (!found.found) {
+    setResult(
+      'ng',
+      '一致する社員番号がありません',
+      '読み取り値: ' + candidates.join(' / ') + '\n社員証をもう一度かざしてください'
+    );
+    return CONFIG.RETRY_WAIT_MS;
+  }
+
+  // 2. 本人確認（はい／いいえ）
+  setStatus('本人確認をお願いします');
+  const same = await askConfirm({ id: found.id, name: found.name });
+
+  // 3-a. はい → 出勤 / 退勤を記録
+  if (same) {
+    setStatus('記録しています…');
+    const rec = await callApi({ action: 'confirm', id: found.id });
+    if (!rec.ok) {
+      setResult('err', '打刻できませんでした', errorMessage(rec.error));
+      return CONFIG.RETRY_WAIT_MS;
+    }
+    setResult('ok', rec.type + 'を記録しました', rec.name + '\n社員番号 ' + rec.id + '\n' + rec.time);
+    return CONFIG.SUCCESS_HOLD_MS;
+  }
+
+  // 3-b. いいえ → 何も記録せず、キャンセルとして表示
+  setResult('ng', 'キャンセルしました', found.name + '\n出勤・退勤は記録していません');
+  return CONFIG.RETRY_WAIT_MS;
+}
+
+/* ===== カメラと読み取りループ ===== */
+async function startCamera() {
+  if (stream) return;
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+    audio: false,
+  });
+  video.srcObject = stream;
+  await video.play();
+}
+
+function cameraError(err) {
+  if (err.name === 'NotAllowedError') return 'カメラの使用が許可されていません。ブラウザの設定で許可してください';
+  if (err.name === 'NotFoundError') return 'カメラが見つかりません';
+  return 'カメラを起動できませんでした（' + err.message + '）';
+}
+
+async function startScanning() {
+  try {
+    setStatus('カメラを起動しています…');
+    await startCamera();
+  } catch (err) {
+    setStatus(cameraError(err), 'err');
+    return;
+  }
+  scanning = true;
+  $('toggle').textContent = '読み取りを停止';
+  runId += 1;
+  scanLoop(runId);
+}
+
+function stopScanning() {
+  scanning = false;
+  $('toggle').textContent = '読み取りを開始';
+}
+
+async function scanLoop(id) {
+  while (scanning && id === runId) {
+    let wait = CONFIG.RETRY_WAIT_MS;
+    try {
+      const ocr = await getWorker();
+      setStatus('社員証を枠に合わせて、静止させてください');
+      prepareFrame();
+      setStatus('文字を読み取っています…');
+      const result = await ocr.recognize(canvas);
+      wait = await verifyAndRecord(extractCandidates(result.data.text));
+    } catch (err) {
+      setResult('err', '読み取りに失敗しました', err.message || String(err));
+    }
+
+    if (!(scanning && id === runId)) break;
+    setStatus(Math.round(wait / 1000) + '秒後に読み取りを再開します');
+    await sleep(wait);
+  }
+  if (id === runId && !scanning) setStatus('停止中');
+}
+
+$('toggle').addEventListener('click', function () {
+  if (scanning) {
+    stopScanning();
+  } else {
+    startScanning();
+  }
+});
+
+/* ===== 手入力 ===== */
+$('manual-btn').addEventListener('click', async function () {
+  const raw = $('manual').value.trim();
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length !== CONFIG.ID_DIGITS) {
+    setResult(
+      'ng',
+      '社員番号は' + CONFIG.ID_DIGITS + '桁です',
+      '入力値: ' + (raw || '（空欄）') + '\n6桁の社員番号を入力してください'
+    );
+    return;
+  }
+  if (busy) {
+    setStatus('前の処理が終わるまでお待ちください');
+    return;
+  }
+  try {
+    await verifyAndRecord([digits]);
+    // 検索中に入力が変わった場合は、新しい入力を残す
+    if ($('manual').value.trim() === raw) {
+      $('manual').value = '';
+    }
+  } catch (err) {
+    setResult('err', '打刻できませんでした', err.message);
+  }
+});
+
+// 検索中に手入力の内容が変わったら、検索を中断する
+$('manual').addEventListener('input', function () {
+  if (searchCancel) {
+    searchCancel();
+    setStatus('中断されました');
+  }
+});
+</script>
+</body>
+</html>
     --paper: #f4f2ec;
     --ink: #1c2530;
     --muted: #6b7480;
