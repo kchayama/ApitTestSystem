@@ -44,7 +44,8 @@
     overflow: hidden;
     border-radius: 6px;
   }
-  video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  video, #preview { width: 100%; height: 100%; object-fit: cover; display: block; }
+  video[hidden], #preview[hidden] { display: none; }
   .guide {
     position: absolute;
     left: 1%; right: 1%; top: 1%; bottom: 1%;
@@ -68,6 +69,7 @@
     color: #fff;
     cursor: pointer;
   }
+  button:disabled { opacity: 0.5; }
   button:focus-visible, input:focus-visible, summary:focus-visible {
     outline: 3px solid var(--guide);
     outline-offset: 2px;
@@ -143,12 +145,13 @@
 <main style="display:flex;flex-direction:column;gap:6px;">
   <div class="camera">
     <video id="video" autoplay muted playsinline></video>
+    <img id="preview" alt="撮影した画像" hidden>
     <div class="guide"></div>
   </div>
   <canvas id="canvas" hidden></canvas>
 
-  <p id="status" class="status">「読み取りを開始」を押すとカメラが起動します</p>
-  <button id="toggle" type="button">読み取りを開始</button>
+  <p id="status" class="status">「カメラを起動」を押してください</p>
+  <button id="shoot" type="button">カメラを起動</button>
 
   <section id="result" data-kind="idle">
     <h2 id="result-title">結果はここに表示されます</h2>
@@ -158,7 +161,7 @@
   <details>
     <summary>手入力で打刻する</summary>
     <div class="manual">
-      <input id="manual" inputmode="numeric" autocomplete="off" placeholder="社員番号">
+      <input id="manual" inputmode="numeric" autocomplete="off" placeholder="社員番号（6桁）">
       <button id="manual-btn" type="button">打刻</button>
     </div>
   </details>
@@ -188,20 +191,19 @@ const CONFIG = {
   API_TOKEN: 'attend2026x',
   ID_DIGITS: 6,          // 社員番号は6桁
   MAX_CANDIDATES: 10,
-  RETRY_WAIT_MS: 2000,
-  SUCCESS_HOLD_MS: 2500,
-  REQUEST_TIMEOUT_MS: 40000,
+  REQUEST_TIMEOUT_MS: 50000,
 };
 
 /* ===== 共通 ===== */
 const $ = (id) => document.getElementById(id);
 const video = $('video');
 const canvas = $('canvas');
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let stream = null;
-let scanning = false;
-let runId = 0;
 let workerPromise = null;
+let captured = false;   // 撮影画像を表示中か
+let busy = false;       // 照合・記録の処理中か
+let searchCancel = null; // 検索中の中断関数（検索中のみ値が入る）
+let lastReadRuns = [];   // 直近に読み取った数字の並び（表示用）
 
 function tick() {
   $('clock').textContent = new Date().toLocaleTimeString('ja-JP', {
@@ -239,6 +241,7 @@ function getWorker() {
   return workerPromise;
 }
 
+// 枠の内側の読み取り範囲をグレースケールにして canvas に描画する
 function prepareFrame() {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
@@ -265,8 +268,15 @@ function prepareFrame() {
   ctx.putImageData(img, 0, 0);
 }
 
-// 直近に読み取った数字の並び（メッセージ表示用）
-let lastReadRuns = [];
+// 撮影した画面全体を、表示用の画像（data URL）にする
+function snapshotFrame() {
+  const shot = document.createElement('canvas');
+  const scale = Math.min(1, 640 / video.videoWidth);
+  shot.width = Math.round(video.videoWidth * scale);
+  shot.height = Math.round(video.videoHeight * scale);
+  shot.getContext('2d').drawImage(video, 0, 0, shot.width, shot.height);
+  return shot.toDataURL('image/jpeg', 0.85);
+}
 
 function extractCandidates(text) {
   const norm = text.replace(/[OoQD]/g, '0').replace(/[IilL|]/g, '1');
@@ -282,9 +292,6 @@ function extractCandidates(text) {
 }
 
 /* ===== サーバー通信（<script>方式） ===== */
-// 検索中だけ中断できるようにするための関数（検索中のみ値が入る）
-let searchCancel = null;
-
 function callApi(params, abortable) {
   return new Promise(function (resolve, reject) {
     if (CONFIG.API_URL.indexOf('ここに') !== -1) {
@@ -358,17 +365,15 @@ function askConfirm(emp) {
   });
 }
 
-/* ===== 画像読み取りと手入力の共通入口 ===== */
-// 処理中に別の読み取り・手入力が来ても二重に動かさない
-let busy = false;
-
+/* ===== 撮影・手入力の共通入口 ===== */
+// 処理中に別の撮影・手入力が来ても二重に動かさない
 async function verifyAndRecord(candidates) {
   if (busy) {
-    return CONFIG.RETRY_WAIT_MS;
+    return;
   }
   busy = true;
   try {
-    return await runVerification(candidates);
+    await runVerification(candidates);
   } finally {
     busy = false;
   }
@@ -381,9 +386,9 @@ async function runVerification(candidates) {
     setResult(
       'ng',
       '社員番号は' + CONFIG.ID_DIGITS + '桁です',
-      '読み取り値: ' + read + '\n6桁の社員番号を枠に合わせて、もう一度かざしてください'
+      '読み取り値: ' + read + '\n6桁の社員番号を枠に合わせて、撮り直してください'
     );
-    return CONFIG.RETRY_WAIT_MS;
+    return;
   }
 
   // 1. 社員マスタを検索（記録はしない）
@@ -393,46 +398,46 @@ async function runVerification(candidates) {
     found = await callApi({ action: 'lookup', candidates: JSON.stringify(candidates) }, true);
   } catch (err) {
     if (err.message === 'ABORTED') {
-      setResult('ng', '検索を中断しました', '入力内容が変わったため、照合を取りやめました。打刻ボタンで再度検索してください');
-      return CONFIG.RETRY_WAIT_MS;
+      setResult('ng', '検索を中断しました', '入力内容が変わったため、照合を取りやめました。もう一度お試しください');
+      return;
     }
-    throw err;
+    setResult('err', '照合できませんでした', err.message);
+    return;
   }
   if (!found.ok) {
     setResult('err', '照合できませんでした', errorMessage(found.error));
-    return CONFIG.RETRY_WAIT_MS;
+    return;
   }
   if (!found.found) {
     setResult(
       'ng',
       '一致する社員番号がありません',
-      '読み取り値: ' + candidates.join(' / ') + '\n社員証をもう一度かざしてください'
+      '読み取り値: ' + candidates.join(' / ') + '\n撮り直してください'
     );
-    return CONFIG.RETRY_WAIT_MS;
+    return;
   }
 
   // 2. 本人確認（はい／いいえ）
   setStatus('本人確認をお願いします');
   const same = await askConfirm({ id: found.id, name: found.name });
 
-  // 3-a. はい → 出勤 / 退勤を記録
+  // 3-a. はい → 出勤を記録、同じ日の2回目以降は同じ行の日時を上書きして退勤
   if (same) {
     setStatus('記録しています…');
     const rec = await callApi({ action: 'confirm', id: found.id });
     if (!rec.ok) {
       setResult('err', '打刻できませんでした', errorMessage(rec.error));
-      return CONFIG.RETRY_WAIT_MS;
+      return;
     }
     setResult('ok', rec.type + 'を記録しました', rec.name + '\n社員番号 ' + rec.id + '\n' + rec.time);
-    return CONFIG.SUCCESS_HOLD_MS;
+    return;
   }
 
   // 3-b. いいえ → 何も記録せず、キャンセルとして表示
   setResult('ng', 'キャンセルしました', found.name + '\n出勤・退勤は記録していません');
-  return CONFIG.RETRY_WAIT_MS;
 }
 
-/* ===== カメラと読み取りループ ===== */
+/* ===== カメラ ===== */
 async function startCamera() {
   if (stream) return;
   stream = await navigator.mediaDevices.getUserMedia({
@@ -449,53 +454,63 @@ function cameraError(err) {
   return 'カメラを起動できませんでした（' + err.message + '）';
 }
 
-async function startScanning() {
-  try {
-    setStatus('カメラを起動しています…');
-    await startCamera();
-  } catch (err) {
-    setStatus(cameraError(err), 'err');
+function showLive() {
+  $('preview').hidden = true;
+  video.hidden = false;
+}
+
+function showPreview(src) {
+  $('preview').src = src;
+  $('preview').hidden = false;
+  video.hidden = true;
+}
+
+/* ===== 撮影ボタン ===== */
+// 1回目：カメラを起動 / 2回目：撮影して読み取り / 撮影後：撮り直す
+async function onShoot() {
+  if (!stream) {
+    try {
+      setStatus('カメラを起動しています…');
+      await startCamera();
+      $('shoot').textContent = '撮影する';
+      setStatus('社員証を枠に合わせて「撮影する」を押してください');
+    } catch (err) {
+      setStatus(cameraError(err), 'err');
+    }
     return;
   }
-  scanning = true;
-  $('toggle').textContent = '読み取りを停止';
-  runId += 1;
-  scanLoop(runId);
-}
 
-function stopScanning() {
-  scanning = false;
-  $('toggle').textContent = '読み取りを開始';
-}
-
-async function scanLoop(id) {
-  while (scanning && id === runId) {
-    let wait = CONFIG.RETRY_WAIT_MS;
-    try {
-      const ocr = await getWorker();
-      setStatus('社員証を枠に合わせて、静止させてください');
-      prepareFrame();
-      setStatus('文字を読み取っています…');
-      const result = await ocr.recognize(canvas);
-      wait = await verifyAndRecord(extractCandidates(result.data.text));
-    } catch (err) {
-      setResult('err', '読み取りに失敗しました', err.message || String(err));
-    }
-
-    if (!(scanning && id === runId)) break;
-    setStatus(Math.round(wait / 1000) + '秒後に読み取りを再開します');
-    await sleep(wait);
+  if (captured) {
+    captured = false;
+    showLive();
+    $('shoot').textContent = '撮影する';
+    setStatus('社員証を枠に合わせて「撮影する」を押してください');
+    return;
   }
-  if (id === runId && !scanning) setStatus('停止中');
+
+  if (busy) {
+    setStatus('前の処理が終わるまでお待ちください');
+    return;
+  }
+
+  try {
+    prepareFrame();                 // 読み取り用の画像を作る
+    const shotUrl = snapshotFrame(); // 撮影した画像を画面に残す
+    captured = true;
+    showPreview(shotUrl);
+    $('shoot').textContent = '撮り直す';
+
+    const ocr = await getWorker();
+    setStatus('文字を読み取っています…');
+    const result = await ocr.recognize(canvas);
+    await verifyAndRecord(extractCandidates(result.data.text));
+  } catch (err) {
+    setResult('err', '読み取りに失敗しました', err.message || String(err));
+  }
+  setStatus('撮り直す場合は「撮り直す」を押してください');
 }
 
-$('toggle').addEventListener('click', function () {
-  if (scanning) {
-    stopScanning();
-  } else {
-    startScanning();
-  }
-});
+$('shoot').addEventListener('click', onShoot);
 
 /* ===== 手入力 ===== */
 $('manual-btn').addEventListener('click', async function () {
@@ -513,6 +528,7 @@ $('manual-btn').addEventListener('click', async function () {
     setStatus('前の処理が終わるまでお待ちください');
     return;
   }
+  setStatus('手入力の社員番号を照合しています…');
   try {
     await verifyAndRecord([digits]);
     // 検索中に入力が変わった場合は、新しい入力を残す
