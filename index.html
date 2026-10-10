@@ -355,21 +355,89 @@ function getReadRect() {
   return { sx, sy, sw, sh };
 }
 
-// この機種のカメラで実際に取れる横幅を超える画素数は選べないようにする
+// 現在のカメラで取得できる横幅を超える画素数には、その旨を表示する
+let want4k = false; // 4K設定で起動しているか
 function updateResOptions() {
   if (!video.videoWidth || !video.getBoundingClientRect().width) return;
   const maxW = Math.floor(getReadRect().sw);
-  const select = $('res');
-  let largestAllowed = null;
-  for (const opt of select.options) {
-    const ok = Number(opt.value) <= maxW;
-    opt.disabled = !ok;
-    opt.hidden = !ok;
-    if (ok) largestAllowed = opt;
+  for (const opt of $('res').options) {
+    if (!opt.dataset.label) opt.dataset.label = opt.textContent;
+    const v = Number(opt.value);
+    opt.hidden = false;
+    if (v <= maxW) {
+      opt.disabled = false;
+      opt.textContent = opt.dataset.label;
+    } else if (want4k) {
+      opt.disabled = true;
+      opt.textContent = opt.dataset.label + '（この機種では非対応）';
+    } else {
+      opt.disabled = false;
+      opt.textContent = opt.dataset.label + '（4K設定が必要）';
+    }
   }
-  const current = select.selectedOptions[0];
-  if (current && current.disabled && largestAllowed) {
-    largestAllowed.selected = true;
+}
+
+// 画素数を変えたとき：4Kが必要なら確認し、OKなら4Kで再起動する
+let lastResValue = '640';
+async function onResChange() {
+  const select = $('res');
+  const chosen = Number(select.value);
+  const maxW = video.videoWidth ? Math.floor(getReadRect().sw) : 0;
+
+  if (chosen <= maxW) {
+    lastResValue = select.value;
+    return;
+  }
+
+  const revert = () => {
+    select.value = lastResValue;
+  };
+
+  if (!stream) {
+    revert();
+    setStatus('先にカメラを起動してください');
+    return;
+  }
+  if (ocrRunning || busy || captured) {
+    revert();
+    setStatus('読み取りを止めて、撮り直してから変更してください');
+    return;
+  }
+  if (want4k) {
+    revert();
+    setResult('ng', 'この機種では横' + chosen + 'pxは選べません', '4K設定でも取得できる横幅は約' + maxW + 'pxです');
+    return;
+  }
+
+  const ok = window.confirm(
+    '横' + chosen + 'pxを選ぶには、カメラの解像度を4K（3840×2160）に上げる必要があります。\n' +
+    'カメラを再起動して4Kに切り替えてよろしいですか？'
+  );
+  if (!ok) {
+    revert();
+    return;
+  }
+
+  want4k = true;
+  try {
+    setStatus('4Kに切り替えています…');
+    stream.getTracks().forEach((t) => t.stop());
+    stream = null;
+    await startCamera();
+    updateResOptions();
+  } catch (err) {
+    revert();
+    setStatus(cameraError(err), 'err');
+    return;
+  }
+
+  const newMax = Math.floor(getReadRect().sw);
+  if (chosen <= newMax) {
+    lastResValue = select.value;
+    setStatus('4Kに切り替えました。横' + chosen + 'pxで読み取ります');
+  } else {
+    revert();
+    setResult('ng', '横' + chosen + 'pxは選べませんでした', 'この機種のカメラでは、4Kでも取得できる横幅は約' + newMax + 'pxです');
   }
 }
 
@@ -546,7 +614,11 @@ async function runVerification(candidates) {
 async function startCamera() {
   if (stream) return;
   stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+    video: {
+      facingMode: { ideal: 'environment' },
+      width: { ideal: want4k ? 3840 : 1920 },
+      height: { ideal: want4k ? 2160 : 1080 },
+    },
     audio: false,
   });
   video.srcObject = stream;
@@ -687,6 +759,7 @@ async function onOcr() {
 }
 
 video.addEventListener('loadedmetadata', updateResOptions);
+$('res').addEventListener('change', onResChange);
 $('ocr').addEventListener('click', onOcr);
 $('shoot').addEventListener('click', onShoot);
 $('read').addEventListener('click', onRead);
