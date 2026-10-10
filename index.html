@@ -301,20 +301,9 @@ function prepareFrame() {
   const vh = video.videoHeight;
   if (!vw || !vh) throw new Error('カメラの準備ができていません');
 
-  // 画面上の映像表示欄（object-fit: cover で切り取られている）
-  const box = video.getBoundingClientRect();
-  const cw = box.width;
-  const ch = box.height;
-  const s = Math.max(cw / vw, ch / vh);          // cover の拡大率
-  const ox = (cw - vw * s) / 2;                  // 表示欄に対する映像の左端のずれ
-  const oy = (ch - vh * s) / 2;                  // 表示欄に対する映像の上端のずれ
-
-  // 枠（.guide：全方向1%の余白の内側）の位置を、映像の座標に変換する
-  const gx = cw * 0.01, gy = ch * 0.01, gw = cw * 0.98, gh = ch * 0.98;
-  const sx = Math.max(0, (gx - ox) / s);
-  const sy = Math.max(0, (gy - oy) / s);
-  const sw = Math.min(vw - sx, gw / s);
-  const sh = Math.min(vh - sy, gh / s);
+  // 表示中の拡大率に合わせて、画面の枠の内側に見えている範囲だけを読む
+  // （getBoundingClientRect は拡大後の大きさを返すため使わない）
+  const { sx, sy, sw, sh } = getReadRect(zoomLevel);
 
   // 縦横比を保って、横640pxに合わせる
   const W = Number($('res').value);
@@ -513,11 +502,11 @@ async function onResChange() {
 // 撮影した画面全体を、表示用の画像（data URL）にする
 function snapshotFrame() {
   const shot = document.createElement('canvas');
-  const scale = Math.min(1, 640 / video.videoWidth);
-  shot.width = Math.round(video.videoWidth * scale);
-  shot.height = Math.round(video.videoHeight * scale);
+  // 拡大表示すると粗く見えるため、カメラの解像度のまま保存する
+  shot.width = video.videoWidth;
+  shot.height = video.videoHeight;
   shot.getContext('2d').drawImage(video, 0, 0, shot.width, shot.height);
-  return shot.toDataURL('image/jpeg', 0.85);
+  return shot.toDataURL('image/jpeg', 0.92);
 }
 
 function extractCandidates(text) {
